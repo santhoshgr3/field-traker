@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { detectStops, reverseGeocode } from '../lib/geoUtils'
+import EmployeeReport from '../components/EmployeeReport'
 
 // ── Icons ────────────────────────────────────────────────────────────────────
 const IconMap = ({ active }) => (
@@ -45,52 +47,6 @@ function fmtDate(d) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function haversineM(lat1, lng1, lat2, lng2) {
-  const R = 6371000, toR = Math.PI / 180
-  const dLat = (lat2 - lat1) * toR, dLng = (lng2 - lng1) * toR
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toR) * Math.cos(lat2*toR) * Math.sin(dLng/2)**2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-}
-
-function detectStops(locations, thresholdM = 100) {
-  if (!locations.length) return []
-  const stops = []
-  let group = [locations[0]]
-  for (let i = 1; i < locations.length; i++) {
-    const prev = group[group.length - 1]
-    const curr = locations[i]
-    if (haversineM(prev.lat, prev.lng, curr.lat, curr.lng) <= thresholdM) {
-      group.push(curr)
-    } else {
-      stops.push({ pings: group, from: group[0].recorded_at, to: group[group.length-1].recorded_at, lat: group[0].lat, lng: group[0].lng })
-      group = [curr]
-    }
-  }
-  stops.push({ pings: group, from: group[0].recorded_at, to: group[group.length-1].recorded_at, lat: group[0].lat, lng: group[0].lng })
-  return stops
-}
-
-const geocodeCache = {}
-async function reverseGeocode(lat, lng) {
-  const key = `${lat.toFixed(5)},${lng.toFixed(5)}`
-  if (geocodeCache[key]) return geocodeCache[key]
-  try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-      { headers: { 'Accept-Language': 'en' } }
-    )
-    const data = await res.json()
-    const a = data.address || {}
-    const name = a.road || a.neighbourhood || a.suburb || a.village || a.town || a.city_district || a.city || data.display_name?.split(',')[0] || key
-    geocodeCache[key] = name
-    return name
-  } catch {
-    return key
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default function AdminDashboard({ user, profile }) {
   const [tab, setTab] = useState('map')
   const [employees, setEmployees] = useState([])
@@ -115,6 +71,7 @@ export default function AdminDashboard({ user, profile }) {
   const [empMsg, setEmpMsg] = useState({ text: '', type: '' })
   const [editingEmp, setEditingEmp] = useState(null)  // { id, name, phone, newPassword }
   const [deleteConfirm, setDeleteConfirm] = useState(null) // employee to delete
+  const [report, setReport] = useState(null) // { employee, date }
 
   const mapRef = useRef(null)
   const leafletMap = useRef(null)
@@ -367,6 +324,10 @@ export default function AdminDashboard({ user, profile }) {
     { id: 'tasks',      label: 'Tasks',    Icon: IconClipboard },
     { id: 'employees',  label: 'Team',     Icon: IconUsers },
   ]
+
+  if (report) {
+    return <EmployeeReport employee={report.employee} date={report.date} onClose={() => setReport(null)} />
+  }
 
   return (
     <div className="flex flex-col bg-gray-50" style={{ height: '100dvh' }}>
@@ -648,9 +609,8 @@ export default function AdminDashboard({ user, profile }) {
                     const dur = calcDuration(rec.check_in, rec.check_out)
                     return (
                       <button key={rec.id} onClick={() => {
-                        setSelectedEmployee(rec.user_id)
-                        setMapDate(attendanceDate)
-                        setTab('map')
+                        const emp = employees.find(e => e.id === rec.user_id) || { id: rec.user_id, name: rec.profiles?.name }
+                        setReport({ employee: emp, date: attendanceDate })
                       }} className="w-full text-left bg-white rounded-2xl px-4 py-4 shadow-sm active:bg-gray-50 transition-colors">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-semibold text-gray-900">{rec.profiles?.name}</span>
@@ -666,9 +626,9 @@ export default function AdminDashboard({ user, profile }) {
                           </div>
                           <div className="flex items-center gap-1 text-xs text-blue-500 font-medium">
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
-                            View route
+                            Full report
                           </div>
                         </div>
                       </button>
