@@ -647,19 +647,31 @@ export default function AdminDashboard({ user, profile }) {
                   {attendance.map(rec => {
                     const dur = calcDuration(rec.check_in, rec.check_out)
                     return (
-                      <div key={rec.id} className="bg-white rounded-2xl px-4 py-4 shadow-sm">
+                      <button key={rec.id} onClick={() => {
+                        setSelectedEmployee(rec.user_id)
+                        setMapDate(attendanceDate)
+                        setTab('map')
+                      }} className="w-full text-left bg-white rounded-2xl px-4 py-4 shadow-sm active:bg-gray-50 transition-colors">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-semibold text-gray-900">{rec.profiles?.name}</span>
                           <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${rec.check_out ? 'bg-gray-100 text-gray-500' : 'bg-green-100 text-green-700'}`}>
                             {rec.check_out ? 'Checked out' : 'On field'}
                           </span>
                         </div>
-                        <div className="flex items-center gap-4 text-sm text-gray-500">
-                          <span>In: <span className="font-medium text-gray-700">{fmtTime(rec.check_in)}</span></span>
-                          <span>Out: <span className="font-medium text-gray-700">{fmtTime(rec.check_out)}</span></span>
-                          {dur && <span className="text-blue-600 font-semibold">{dur}</span>}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4 text-sm text-gray-500">
+                            <span>In: <span className="font-medium text-gray-700">{fmtTime(rec.check_in)}</span></span>
+                            <span>Out: <span className="font-medium text-gray-700">{fmtTime(rec.check_out)}</span></span>
+                            {dur && <span className="text-blue-600 font-semibold">{dur}</span>}
+                          </div>
+                          <div className="flex items-center gap-1 text-xs text-blue-500 font-medium">
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            </svg>
+                            View route
+                          </div>
                         </div>
-                      </div>
+                      </button>
                     )
                   })}
                 </div>
