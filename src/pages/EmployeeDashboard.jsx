@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { queuePing, syncQueue, getQueueCount } from '../lib/offlineQueue'
 
 // ── Bottom nav icons ──────────────────────────────────────────────────────────
 const IconHome = ({ active }) => (
@@ -41,6 +42,8 @@ export default function EmployeeDashboard({ user, profile }) {
   const [workedSeconds, setWorkedSeconds] = useState(0)
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState({ text: '', type: '' })
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [queuedCount, setQueuedCount] = useState(0)
 
   // Check-in photo modal state
   const [showCheckinModal, setShowCheckinModal] = useState(false)
@@ -62,14 +65,44 @@ export default function EmployeeDashboard({ user, profile }) {
     return () => clearInterval(clockRef.current)
   }, [checkedIn, checkInTime])
 
+  // ── Online / offline detection + auto-sync ─────────────────────────────────
+  useEffect(() => {
+    const goOnline = async () => {
+      setIsOnline(true)
+      const synced = await syncQueue(supabase)
+      if (synced > 0) {
+        setQueuedCount(0)
+        setMsg({ text: `Back online — ${synced} location${synced > 1 ? 's' : ''} synced`, type: 'success' })
+        setTimeout(() => setMsg({ text: '', type: '' }), 4000)
+      }
+    }
+    const goOffline = () => setIsOnline(false)
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    return () => {
+      window.removeEventListener('online', goOnline)
+      window.removeEventListener('offline', goOffline)
+    }
+  }, [])
+
   // ── GPS tracking (only when checked in) ────────────────────────────────────
   useEffect(() => {
     if (!checkedIn) return
     const send = () => {
       navigator.geolocation.getCurrentPosition(async ({ coords: { latitude: lat, longitude: lng } }) => {
         const now = new Date().toISOString()
-        await supabase.from('locations').upsert({ user_id: user.id, lat, lng, updated_at: now }, { onConflict: 'user_id' })
-        await supabase.from('location_history').insert({ user_id: user.id, lat, lng, recorded_at: now })
+        const ping = { user_id: user.id, lat, lng, recorded_at: now }
+        if (navigator.onLine) {
+          await supabase.from('locations').upsert({ user_id: user.id, lat, lng, updated_at: now }, { onConflict: 'user_id' })
+          await supabase.from('location_history').insert(ping)
+          // Flush any previously queued pings
+          const synced = await syncQueue(supabase)
+          if (synced > 0) setQueuedCount(0)
+        } else {
+          await queuePing(ping)
+          const count = await getQueueCount()
+          setQueuedCount(count)
+        }
       })
     }
     send()
@@ -242,6 +275,23 @@ export default function EmployeeDashboard({ user, profile }) {
           Sign out
         </button>
       </div>
+
+      {/* ── Offline banner ── */}
+      {!isOnline && (
+        <div className="bg-orange-500 px-4 py-2 flex items-center gap-2 flex-shrink-0">
+          <svg className="w-4 h-4 text-white flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 5.636a9 9 0 010 12.728M15.536 8.464a5 5 0 010 7.072M12 12h.01M8.464 15.536a5 5 0 010-7.072M5.636 18.364a9 9 0 010-12.728" />
+          </svg>
+          <p className="text-xs text-white font-medium flex-1">
+            No internet — GPS pings are saved locally
+          </p>
+          {queuedCount > 0 && (
+            <span className="text-xs bg-white/30 text-white px-2 py-0.5 rounded-full font-bold">
+              {queuedCount} queued
+            </span>
+          )}
+        </div>
+      )}
 
       {/* ── Check-in photo modal ── */}
       {showCheckinModal && (
