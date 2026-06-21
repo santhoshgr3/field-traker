@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { detectStops, reverseGeocode } from '../lib/geoUtils'
 
@@ -27,9 +27,12 @@ export default function EmployeeReport({ employee, date, onClose }) {
   const [loading, setLoading] = useState(true)
   const [att, setAtt] = useState(null)
   const [stops, setStops] = useState([])
+  const [locs, setLocs] = useState([])
   const [tasks, setTasks] = useState([])
   const [logs, setLogs] = useState([])
   const [names, setNames] = useState({})
+  const mapRef = useRef(null)
+  const leafletMap = useRef(null)
 
   useEffect(() => {
     const d0 = `${date}T00:00:00`, d1 = `${date}T23:59:59`
@@ -45,10 +48,11 @@ export default function EmployeeReport({ employee, date, onClose }) {
         .not('event_type', 'in', '(check_in,check_out)')
         .order('created_at', { ascending: true }),
     ]).then(([attRes, locsRes, tasksRes, logsRes]) => {
-      const locs = locsRes.data || []
-      const computedStops = detectStops(locs)
+      const locsData = locsRes.data || []
+      const computedStops = detectStops(locsData)
       setAtt(attRes.data)
       setStops(computedStops)
+      setLocs(locsData)
       setTasks(tasksRes.data || [])
       setLogs(logsRes.data || [])
       setLoading(false)
@@ -72,6 +76,81 @@ export default function EmployeeReport({ employee, date, onClose }) {
       })()
     })
   }, [employee.id, date])
+
+  // Build / refresh the route map whenever data is ready
+  useEffect(() => {
+    if (loading || !mapRef.current || !window.L) return
+    if (locs.length === 0 && !att) return
+
+    // Init map once
+    if (!leafletMap.current) {
+      const map = window.L.map(mapRef.current, { zoomControl: false, attributionControl: false })
+      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
+      window.L.control.zoom({ position: 'bottomright' }).addTo(map)
+      leafletMap.current = map
+    }
+    const map = leafletMap.current
+
+    // Remove previous layers
+    map.eachLayer(layer => { if (layer._routeLayer) map.removeLayer(layer) })
+
+    const addRouteLayer = layer => { layer._routeLayer = true; layer.addTo(map); return layer }
+
+    if (locs.length === 0) {
+      // Only attendance coords available
+      if (att?.check_in_lat) map.setView([att.check_in_lat, att.check_in_lng], 15)
+    } else {
+      const pts = locs.map(p => [p.lat, p.lng])
+
+      // Route polyline
+      if (pts.length >= 2) {
+        const line = window.L.polyline(pts, { color: '#2563eb', weight: 4, opacity: 0.85 })
+        addRouteLayer(line)
+        map.fitBounds(line.getBounds(), { padding: [40, 40] })
+      } else {
+        map.setView(pts[0], 16)
+      }
+
+      // Waypoint dots (small, non-intrusive)
+      pts.forEach((pt, i) => {
+        if (i === 0 || i === pts.length - 1) return
+        addRouteLayer(window.L.circleMarker(pt, { radius: 3, color: '#2563eb', fillColor: '#bfdbfe', fillOpacity: 1, weight: 1 })
+          .bindPopup(fmtTime(locs[i].recorded_at)))
+      })
+
+      // Check-in marker (green)
+      addRouteLayer(window.L.circleMarker(pts[0], { radius: 10, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1, weight: 2 })
+        .bindPopup(`<b>Check-in</b><br/>${fmtTime(att?.check_in || locs[0].recorded_at)}`))
+
+      // Stop markers (numbered)
+      stops.forEach((stop, idx) => {
+        const stopIcon = window.L.divIcon({
+          className: '',
+          html: `<div style="width:28px;height:28px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)">${idx + 1}</div>`,
+          iconSize: [28, 28], iconAnchor: [14, 14],
+        })
+        addRouteLayer(window.L.marker([stop.lat, stop.lng], { icon: stopIcon })
+          .bindPopup(`<b>Stop ${idx + 1}</b><br/>${fmtTime(stop.from)} – ${fmtTime(stop.to)}`))
+      })
+
+      // Last point marker
+      const lastPt = pts[pts.length - 1]
+      const isOut = !!att?.check_out
+      addRouteLayer(window.L.circleMarker(lastPt, {
+        radius: 10,
+        color: isOut ? '#991b1b' : '#1e40af',
+        fillColor: isOut ? '#ef4444' : '#3b82f6',
+        fillOpacity: 1, weight: 2,
+      }).bindPopup(isOut
+        ? `<b>Check-out</b><br/>${fmtTime(att.check_out)}`
+        : `<b>Last location</b><br/>${fmtTime(locs[locs.length - 1].recorded_at)}`))
+    }
+
+    return () => {
+      if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
 
   const placeName = (lat, lng) => {
     if (lat == null || lng == null) return null
@@ -122,6 +201,28 @@ export default function EmployeeReport({ employee, date, onClose }) {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
+
+          {/* Route map */}
+          <div ref={mapRef} style={{ height: '40dvh', minHeight: 220 }} className="w-full bg-gray-100" />
+
+          {/* Map legend */}
+          <div className="flex items-center gap-4 px-4 py-2 bg-white border-b border-gray-100 text-xs text-gray-500">
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full bg-green-500 inline-block" /> Check-in
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full bg-blue-600 inline-block" /> Stops
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> Check-out
+            </span>
+            <span className="flex items-center gap-1 ml-auto">
+              <svg className="w-3 h-3 text-blue-400" viewBox="0 0 10 3" fill="none">
+                <line x1="0" y1="1.5" x2="10" y2="1.5" stroke="#2563eb" strokeWidth="2.5"/>
+              </svg>
+              Route
+            </span>
+          </div>
 
           {/* Check-in photo */}
           {att?.check_in_photo && (
